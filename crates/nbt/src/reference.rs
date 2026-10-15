@@ -728,6 +728,29 @@ impl<'a> ListRefMut<'a> {
         true
     }
 
+    pub fn remove_index(&mut self, index: usize) -> bool {
+        let (_, children) = self.get_self_node_mut();
+        if index >= children.len() {
+            return false;
+        }
+
+        let idx = children.remove(index);
+        self.nbt.remove_node(idx);
+        true
+    }
+
+    pub fn get_compound_mut(&mut self, index: usize) -> Option<CompoundRefMut<'_>> {
+        let (_, children) = self.get_self_node();
+        let idx = *children.get(index)?;
+        match self.nbt.nodes.get(idx) {
+            Some(NBTNode::Compound(_)) => Some(CompoundRefMut {
+                nbt: self.nbt,
+                node_idx: idx,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn get(&self, index: usize) -> Option<NBTRef<'_>> {
         let (_, children) = self.get_self_node();
         let idx = children.get(index)?;
