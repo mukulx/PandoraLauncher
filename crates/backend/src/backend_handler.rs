@@ -86,6 +86,15 @@ impl BackendState {
             MessageToBackend::ReorderServers { id, from_index, to_index } => {
                 tokio::task::spawn(Instance::reorder_servers(self.clone(), id, from_index, to_index));
             },
+            MessageToBackend::AddServer { id, name, ip } => {
+                tokio::task::spawn(Instance::add_server(self.clone(), id, name, ip));
+            },
+            MessageToBackend::EditServer { id, index, name, ip } => {
+                tokio::task::spawn(Instance::edit_server(self.clone(), id, index, name, ip));
+            },
+            MessageToBackend::DeleteServer { id, index } => {
+                tokio::task::spawn(Instance::delete_server(self.clone(), id, index));
+            },
             MessageToBackend::RequestLoadContentFolder { id, content_folder } => {
                 tokio::task::spawn(Instance::load_content(self.clone(), id, content_folder));
             },

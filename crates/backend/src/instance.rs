@@ -429,6 +429,115 @@ impl Instance {
         }
     }
 
+    pub async fn add_server(backend: Arc<BackendState>, id: InstanceID, name: Arc<str>, ip: Arc<str>) {
+        Self::modify_servers_dat(&backend, id, true, |servers| {
+            let mut server = servers.create_compound();
+            server.insert_string("ip", ip.to_string());
+            server.insert_string("name", name.to_string());
+            true
+        });
+    }
+
+    pub async fn edit_server(backend: Arc<BackendState>, id: InstanceID, index: usize, name: Arc<str>, ip: Arc<str>) {
+        Self::modify_servers_dat(&backend, id, false, |servers| {
+            let Some(raw_index) = Self::raw_server_index(servers, index) else {
+                return false;
+            };
+            let Some(mut server) = servers.get_compound_mut(raw_index) else {
+                return false;
+            };
+            server.insert_string("ip", ip.to_string());
+            server.insert_string("name", name.to_string());
+            true
+        });
+    }
+
+    pub async fn delete_server(backend: Arc<BackendState>, id: InstanceID, index: usize) {
+        Self::modify_servers_dat(&backend, id, false, |servers| {
+            let Some(raw_index) = Self::raw_server_index(servers, index) else {
+                return false;
+            };
+            servers.remove_index(raw_index)
+        });
+    }
+
+    /// The frontend only sees servers that are not hidden and have an ip,
+    /// so translate its index into a position in the raw nbt list
+    fn raw_server_index(servers: &nbt::ListRefMut<'_>, visible_index: usize) -> Option<usize> {
+        let mut visible = 0;
+        for raw_index in 0..servers.len() {
+            let server = servers.get(raw_index)?.as_compound()?;
+            if server.find_byte("hidden").is_some_and(|hidden| *hidden != 0) || server.find_string("ip").is_none() {
+                continue;
+            }
+            if visible == visible_index {
+                return Some(raw_index);
+            }
+            visible += 1;
+        }
+        None
+    }
+
+    fn modify_servers_dat(
+        backend: &Arc<BackendState>,
+        id: InstanceID,
+        create_if_missing: bool,
+        modify: impl FnOnce(&mut nbt::ListRefMut<'_>) -> bool,
+    ) {
+        let server_dat_path = {
+            let guard = backend.instance_state.read();
+            let Some(instance) = guard.instances.get(id) else {
+                return;
+            };
+            instance.server_dat_path.clone()
+        };
+
+        let mut result = if server_dat_path.exists() {
+            let raw = match std::fs::read(&server_dat_path) {
+                Ok(raw) => raw,
+                Err(err) => {
+                    log::error!("Error while reading servers.dat: {err:?}");
+                    backend.send.send_error(format!("Error while reading servers.dat: {err}"));
+                    return;
+                },
+            };
+            let mut nbt_data = raw.as_slice();
+            match nbt::decode::read_named(&mut nbt_data) {
+                Ok(result) => result,
+                Err(err) => {
+                    log::error!("Error while decoding servers.dat: {err:?}");
+                    backend.send.send_error(format!("Error while decoding servers.dat: {err}"));
+                    return;
+                },
+            }
+        } else if create_if_missing {
+            nbt::NBT::new()
+        } else {
+            backend.send.send_error("servers.dat does not exist");
+            return;
+        };
+
+        let Some(mut root) = result.as_compound_mut() else {
+            backend.send.send_error("Unable to get root compound");
+            return;
+        };
+        if create_if_missing && root.find_list("servers", nbt::TAG_COMPOUND_ID).is_none() {
+            root.create_list("servers", nbt::TAG_COMPOUND_ID);
+        }
+        let Some(mut servers) = root.find_list_mut("servers", nbt::TAG_COMPOUND_ID) else {
+            backend.send.send_error("Unable to get servers list");
+            return;
+        };
+
+        if modify(&mut servers) {
+            let bytes = nbt::encode::write_named(&result);
+            if let Err(err) = crate::fs::write_safe(&server_dat_path, &bytes) {
+                log::error!("Error while writing servers.dat: {err:?}");
+                backend.send.send_error(format!("Error while writing servers.dat: {err}"));
+            }
+        }
+    }
+
     fn load_servers_inner(
         backend: Arc<BackendState>,
         id: InstanceID,

@@ -172,6 +172,21 @@ pub enum MessageToBackend {
         from_index: usize,
         to_index: usize,
     },
+    AddServer {
+        id: InstanceID,
+        name: Arc<str>,
+        ip: Arc<str>,
+    },
+    EditServer {
+        id: InstanceID,
+        index: usize,
+        name: Arc<str>,
+        ip: Arc<str>,
+    },
+    DeleteServer {
+        id: InstanceID,
+        index: usize,
+    },
     RequestLoadContentFolder {
         id: InstanceID,
         content_folder: ContentFolder,
