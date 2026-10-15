@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::{ffi::OsString, sync::Arc};
 
 use bridge::{
     handle::BackendHandle,
@@ -7,12 +7,13 @@ use bridge::{
     serial::AtomicOptionSerial,
 };
 use gpui::{prelude::*, *};
+use parking_lot::Mutex;
 use gpui_component::{
     ActiveTheme as _, Colorize, Disableable, IndexPath, Sizable, Theme, button::{Button, ButtonVariants}, h_flex, list::{List, ListDelegate, ListItem, ListState}, spinner::Spinner, v_flex
 };
 
 use crate::{
-    entity::{DataEntities, instance::InstanceEntry}, icon::PandoraIcon, interface_config::InterfaceConfig, png_render_cache, root,
+    entity::{DataEntities, instance::InstanceEntry}, icon::PandoraIcon, interface_config::InterfaceConfig, modals::edit_server::ExistingServer, png_render_cache, root,
 };
 
 pub struct InstanceQuickplaySubpage {
@@ -59,6 +60,7 @@ impl InstanceQuickplaySubpage {
             servers: servers.clone().unwrap_or_default(),
             searched: servers.unwrap_or_default(),
             search_query: String::new(),
+            confirming_delete: Default::default(),
         };
 
         let worlds = instance.worlds.clone();
@@ -129,7 +131,22 @@ impl Render for InstanceQuickplaySubpage {
         }
 
         let worlds_header = div().mb_1().ml_1().text_lg().child(t::instance::worlds());
-        let servers_header = div().mb_1().ml_1().text_lg().child(t::instance::servers());
+        let servers_header = h_flex()
+            .mb_1()
+            .ml_1()
+            .items_center()
+            .child(div().flex_1().text_lg().child(t::instance::servers()))
+            .child(Button::new("add-server")
+                .compact()
+                .small()
+                .icon(PandoraIcon::Plus)
+                .label(t::instance::quickplay::add_server())
+                .on_click({
+                    let backend_handle = self.backend_handle.clone();
+                    move |_, window, cx| {
+                        crate::modals::edit_server::open_edit_server(instance_id, None, backend_handle.clone(), window, cx);
+                    }
+                }));
         let total_playtime = format_playtime(playtime.total_secs);
         let current_session = if playtime.current_session_secs > 0 {
             format_playtime(playtime.current_session_secs)
@@ -316,6 +333,7 @@ pub struct ServersListDelegate {
     servers: Vec<InstanceServerSummary>,
     searched: Vec<InstanceServerSummary>,
     search_query: String,
+    confirming_delete: Arc<Mutex<Option<usize>>>,
 }
 
 impl ListDelegate for ServersListDelegate {
@@ -441,6 +459,7 @@ impl ListDelegate for ServersListDelegate {
             .disabled(!can_reorder || row_index == 0)
             .on_click(cx.listener(move |this, _, _, cx| {
                 let delegate = this.delegate_mut();
+                *delegate.confirming_delete.lock() = None;
                 if !delegate.can_reorder() || row_index == 0 {
                     return;
                 }
@@ -454,16 +473,91 @@ impl ListDelegate for ServersListDelegate {
             .disabled(!can_reorder || row_index + 1 >= self.searched.len())
             .on_click(cx.listener(move |this, _, _, cx| {
                 let delegate = this.delegate_mut();
+                *delegate.confirming_delete.lock() = None;
                 if !delegate.can_reorder() || row_index + 1 >= delegate.searched.len() {
                     return;
                 }
                 delegate.reorder_servers(row_index, row_index + 1, cx);
             }));
 
+        let hover_group: SharedString = format!("server-row-{row_index}").into();
+
+        // Index in the full list, which differs from the row while searching
+        let server_index = self.server_index(row_index);
+        let is_confirming_delete = *self.confirming_delete.lock() == Some(row_index);
+
+        let edit_button = Button::new(("server-edit", row_index))
+            .compact()
+            .small()
+            .icon(PandoraIcon::Pencil)
+            .tooltip(t::instance::quickplay::edit_server())
+            .on_click(cx.listener({
+                let name = summary.name.clone();
+                let ip = summary.ip.clone();
+                move |this, _, window, cx| {
+                    let delegate = this.delegate_mut();
+                    *delegate.confirming_delete.lock() = None;
+                    let Some(index) = server_index else {
+                        return;
+                    };
+                    crate::modals::edit_server::open_edit_server(
+                        delegate.id,
+                        Some(ExistingServer { index, name: name.clone(), ip: ip.clone() }),
+                        delegate.data.backend_handle.clone(),
+                        window,
+                        cx,
+                    );
+                    cx.notify();
+                }
+            }));
+
+        let delete_button = if is_confirming_delete {
+            Button::new(("server-delete", row_index))
+                .compact()
+                .small()
+                .danger()
+                .icon(PandoraIcon::Check)
+                .tooltip(t::instance::quickplay::confirm_delete_server())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let delegate = this.delegate_mut();
+                    *delegate.confirming_delete.lock() = None;
+                    if let Some(index) = server_index {
+                        delegate.data.backend_handle.send(MessageToBackend::DeleteServer {
+                            id: delegate.id,
+                            index,
+                        });
+                    }
+                    cx.notify();
+                }))
+        } else {
+            Button::new(("server-delete", row_index))
+                .compact()
+                .small()
+                .danger()
+                .icon(PandoraIcon::Trash2)
+                .tooltip(t::instance::quickplay::delete_server())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    *this.delegate_mut().confirming_delete.lock() = Some(row_index);
+                    cx.notify();
+                }))
+        };
+
+        // Arrows on the left, edit and delete on the right. Hidden until the row is
+        // hovered, unless a delete is waiting for confirmation
+        let actions = v_flex()
+            .gap_1()
+            .px_2()
+            .when(!is_confirming_delete, |this| {
+                this.invisible().group_hover(hover_group.clone(), |style| style.visible())
+            })
+            .child(h_flex().gap_1().child(move_up).child(edit_button))
+            .child(h_flex().gap_1().child(move_down).child(delete_button));
+
         let item = ListItem::new(ix)
             .p_1()
             .child(
                 h_flex()
+                    .group(hover_group)
                     .gap_1()
                     .child(
                         div()
@@ -481,12 +575,7 @@ impl ListDelegate for ServersListDelegate {
                     )
                     .child(icon.size_16().min_w_16().min_h_16())
                     .child(description)
-                    .child(v_flex()
-                        .gap_1()
-                        .child(move_up)
-                        .child(move_down)
-                        .px_2(),
-                    ),
+                    .child(actions),
             );
 
         Some(item)
@@ -498,6 +587,7 @@ impl ListDelegate for ServersListDelegate {
     fn perform_search(&mut self, query: &str, _window: &mut Window, _cx: &mut Context<ListState<Self>>) -> Task<()> {
         self.search_query = query.to_string();
         self.searched = self.apply_search(query);
+        *self.confirming_delete.lock() = None;
 
         Task::ready(())
     }
@@ -512,6 +602,17 @@ impl ServersListDelegate {
         self.loaded = servers.is_some();
         self.servers = servers.unwrap_or_default();
         self.searched = self.apply_search(&self.search_query);
+        *self.confirming_delete.lock() = None;
+    }
+
+    fn server_index(&self, row: usize) -> Option<usize> {
+        if self.search_query.is_empty() {
+            return (row < self.servers.len()).then_some(row);
+        }
+        self.servers.iter().enumerate()
+            .filter(|(_, server)| server.name.contains(&self.search_query))
+            .nth(row)
+            .map(|(index, _)| index)
     }
 
     fn apply_search(&self, query: &str) -> Vec<InstanceServerSummary> {
