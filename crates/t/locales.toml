@@ -1800,6 +1800,18 @@ hu = "Nem sikerült lekérni a szerver státuszát"
 ru = "Не удалось получить статус сервера"
 fr = "Impossible d'obtenir l'état du serveur"
 it = "Impossibile ottenere lo stato del server"
+[instance.quickplay.add_server]
+en = "Add server"
+[instance.quickplay.edit_server]
+en = "Edit server"
+[instance.quickplay.delete_server]
+en = "Delete server"
+[instance.quickplay.confirm_delete_server]
+en = "Click again to delete"
+[instance.quickplay.server_address]
+en = "Address"
+[instance.quickplay.default_server_name]
+en = "Minecraft Server"
 [instance.worlds]
 en = "Worlds"
 tr = "Dünyalar"
